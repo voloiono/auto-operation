@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:h2:mem:autooperation
+      - SPRING_JPA_HIBERNATE_DDL_AUTO=validate
+    volumes:
+      - ./scripts:/app/scripts
+    networks:
+      - autooperation
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend.Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - autooperation
+
+networks:
+  autooperation:
+    driver: bridge

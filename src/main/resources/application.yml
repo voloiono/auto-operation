@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: auto-operation
+  datasource:
+    url: jdbc:mysql://localhost:3306/autooperation?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: root
+    password: root
+  jpa:
+    database-platform: org.hibernate.dialect.MySQLDialect
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+  flyway:
+    enabled: false
+
+app:
+  scripts:
+    dir: ./scripts
+  python:
+    executable: ./python/python-3.12.8-embed-amd64/python.exe
+    auto-setup: true
+
+server:
+  port: 8083
+  servlet:
+    context-path: /
+
+logging:
+  level:
+    root: INFO
+    com.example.autooperation: DEBUG

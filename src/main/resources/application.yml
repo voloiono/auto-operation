@@ -23,6 +23,7 @@ app:
   python:
     executable: ./python/python-3.12.8-embed-amd64/python.exe
     auto-setup: true
+  headless-mode: false  # 设置为 true 时，所有脚本强制以无头浏览器模式运行（适用于服务器/无桌面环境）
 
 server:
   port: 8083

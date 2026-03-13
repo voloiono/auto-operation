@@ -12,6 +12,7 @@ import java.net.Proxy;
 import java.net.ProxySelector;
 import java.net.URI;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -46,7 +47,7 @@ public class ScriptPackageService {
         Path scriptFile = tempDir.resolve(name + ".py");
 
         try {
-            Files.write(scriptFile, scriptContent.getBytes());
+            Files.write(scriptFile, scriptContent.getBytes(StandardCharsets.UTF_8));
 
             String pythonPath = pythonEnv.getResolvedPath();
             log.info("Using Python executable for packaging: {}", pythonPath);
@@ -578,6 +579,7 @@ public class ScriptPackageService {
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.directory(tempDir.toFile());
         pb.redirectErrorStream(true);
+        pb.environment().put("PYTHONIOENCODING", "utf-8");
         pythonEnv.configurePythonPath(pb);
 
         Process process = pb.start();
@@ -615,6 +617,7 @@ public class ScriptPackageService {
         );
         pb.directory(workDir.toFile());
         pb.redirectErrorStream(true);
+        pb.environment().put("PYTHONIOENCODING", "utf-8");
         pythonEnv.configurePythonPath(pb);
 
         Process process = pb.start();
@@ -631,7 +634,7 @@ public class ScriptPackageService {
 
     private String captureProcessOutput(Process process) throws IOException {
         StringBuilder sb = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 sb.append(line).append("\n");

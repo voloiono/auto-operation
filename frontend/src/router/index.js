@@ -3,6 +3,7 @@ import ProjectList from '../views/ProjectList.vue'
 import ProjectEditor from '../views/ProjectEditor.vue'
 import ScheduleConfig from '../views/ScheduleConfig.vue'
 import ExecutionHistory from '../views/ExecutionHistory.vue'
+import Marketplace from '../views/Marketplace.vue'
 
 const routes = [
   {
@@ -28,6 +29,11 @@ const routes = [
     path: '/projects/:projectId/flows/:flowId/history',
     name: 'ExecutionHistory',
     component: ExecutionHistory
+  },
+  {
+    path: '/marketplace',
+    name: 'Marketplace',
+    component: Marketplace
   }
 ]
 

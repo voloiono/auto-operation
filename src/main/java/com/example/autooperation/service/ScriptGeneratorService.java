@@ -2,16 +2,22 @@ package com.example.autooperation.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.autooperation.model.Module;
+import com.example.autooperation.repository.ModuleRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
 public class ScriptGeneratorService {
     private final ObjectMapper objectMapper;
+    private final ModuleRepository moduleRepository;
 
     @Value("${app.python.executable:python}")
     private String pythonExecutable;
@@ -34,8 +40,63 @@ public class ScriptGeneratorService {
         script.append("import smtplib\n");
         script.append("from email.mime.text import MIMEText\n\n");
 
-        script.append("logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')\n");
-        script.append("logger = logging.getLogger(__name__)\n\n");
+        // 收集动态模块的额外 imports
+        JsonNode modules = config.get("modules");
+        if (modules != null && modules.isArray()) {
+            Set<String> dynamicImports = new LinkedHashSet<>();
+            for (JsonNode module : modules) {
+                String moduleType = module.get("type").asText();
+                moduleRepository.findByModuleId(moduleType).ifPresent(m -> {
+                    if (m.getImports() != null && !m.getImports().isBlank()) {
+                        for (String importLine : m.getImports().split("\n")) {
+                            String trimmed = importLine.trim();
+                            if (!trimmed.isEmpty()) {
+                                dynamicImports.add(trimmed);
+                            }
+                        }
+                    }
+                });
+            }
+            for (String imp : dynamicImports) {
+                script.append(imp).append("\n");
+            }
+            if (!dynamicImports.isEmpty()) {
+                script.append("\n");
+            }
+        }
+
+        // 日志同时输出到控制台和文件
+        script.append("# ====== 日志配置：控制台 + 文件双输出 ======\n");
+        script.append("_log_fmt = '%(asctime)s - %(levelname)s - %(message)s'\n");
+        script.append("# 日志目录：默认为脚本所在文件夹下的「自动化运行日志」，可通过 _LOG_DIR_OVERRIDE 指定\n");
+        script.append("_LOG_DIR_OVERRIDE = ''  # 留空表示使用脚本所在目录\n");
+        script.append("if _LOG_DIR_OVERRIDE:\n");
+        script.append("    _log_dir = _LOG_DIR_OVERRIDE\n");
+        script.append("elif getattr(sys, 'frozen', False):\n");
+        script.append("    _log_dir = os.path.join(os.path.dirname(sys.executable), '自动化运行日志')\n");
+        script.append("else:\n");
+        script.append("    _log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '自动化运行日志')\n");
+        script.append("os.makedirs(_log_dir, exist_ok=True)\n");
+        script.append("_log_file = os.path.join(_log_dir, f'run_{time.strftime(\"%Y%m%d_%H%M%S\")}.log')\n");
+        script.append("logging.basicConfig(\n");
+        script.append("    level=logging.INFO,\n");
+        script.append("    format=_log_fmt,\n");
+        script.append("    handlers=[\n");
+        script.append("        logging.StreamHandler(),\n");
+        script.append("        logging.FileHandler(_log_file, encoding='utf-8')\n");
+        script.append("    ]\n");
+        script.append(")\n");
+        script.append("logger = logging.getLogger(__name__)\n");
+        script.append("logger.info(f'日志文件: {_log_file}')\n");
+        script.append("# 清理30天前的旧日志\n");
+        script.append("try:\n");
+        script.append("    import glob as _glob\n");
+        script.append("    _cutoff = time.time() - 30 * 86400\n");
+        script.append("    for _old_log in _glob.glob(os.path.join(_log_dir, 'run_*.log')):\n");
+        script.append("        if os.path.getmtime(_old_log) < _cutoff:\n");
+        script.append("            os.remove(_old_log)\n");
+        script.append("except Exception:\n");
+        script.append("    pass\n\n");
 
         // PyInstaller 路径检测
         script.append("# 路径检测（支持 PyInstaller 打包）\n");
@@ -133,7 +194,7 @@ public class ScriptGeneratorService {
         script.append("    def __init__(self):\n");
         script.append("        self.driver = None\n\n");
 
-        JsonNode modules = config.get("modules");
+        modules = config.get("modules");
 
         // 收集全程监控配置（close_popup + monitor_mode=continuous）
         List<JsonNode> continuousMonitors = new ArrayList<>();
@@ -257,6 +318,7 @@ public class ScriptGeneratorService {
             case "open_browser" -> generateOpenBrowser(params);
             case "input_account" -> generateInputAccount(params);
             case "click_button" -> generateClickButton(params);
+            case "navigate_to_url" -> generateNavigateToUrl(params);
             case "input_text" -> generateInputText(params);
             case "select_dropdown" -> generateSelectDropdown(params);
             case "wait_element" -> generateWaitElement(params);
@@ -276,8 +338,45 @@ public class ScriptGeneratorService {
             case "send_email" -> generateSendEmail(params);
             case "error_monitor" -> "";
             case "scheduled_task" -> "";
-            default -> "            # Unknown module type: " + type + "\n";
+            default -> renderDynamicModule(type, params);
         };
+    }
+
+    /**
+     * 从数据库查找动态模块并使用 pythonTemplate 渲染代码
+     */
+    private String renderDynamicModule(String type, JsonNode params) {
+        return moduleRepository.findByModuleId(type)
+                .map(module -> {
+                    String template = module.getPythonTemplate();
+                    if (template == null || template.isBlank()) {
+                        return "            # Module " + type + " has no template\n";
+                    }
+                    return renderTemplate(template, params);
+                })
+                .orElse("            # Unknown module type: " + type + "\n");
+    }
+
+    /**
+     * 渲染模板：将 {{paramName}} 占位符替换为实际参数值
+     */
+    public String renderTemplate(String template, JsonNode params) {
+        String result = template;
+        if (params != null) {
+            Iterator<String> fieldNames = params.fieldNames();
+            while (fieldNames.hasNext()) {
+                String fieldName = fieldNames.next();
+                String value = params.get(fieldName).asText("");
+                result = result.replace("{{" + fieldName + "}}", value);
+            }
+        }
+        // 添加12空格缩进（方法体内缩进）
+        StringBuilder sb = new StringBuilder();
+        String[] lines = result.split("\n");
+        for (String line : lines) {
+            sb.append("            ").append(line).append("\n");
+        }
+        return sb.toString();
     }
 
     private String generateOpenBrowser(JsonNode params) {
@@ -305,6 +404,15 @@ public class ScriptGeneratorService {
             code.append(              "            _options.add_argument('--log-level=3')\n");
             code.append(              "            _options.add_experimental_option('excludeSwitches', ['enable-logging', 'enable-automation'])\n");
             code.append(              "            _options.add_experimental_option('useAutomationExtension', False)\n");
+            // 运行时无头模式检测（服务器部署时通过环境变量控制）
+            code.append(              "            if os.environ.get('HEADLESS_MODE', '').lower() in ('1', 'true'):\n");
+            code.append(              "                _options.add_argument('--headless=new')\n");
+            code.append(              "                logger.info('Headless mode enabled via HEADLESS_MODE env')\n");
+        }
+        if (browserType.equals("firefox")) {
+            code.append(              "            if os.environ.get('HEADLESS_MODE', '').lower() in ('1', 'true'):\n");
+            code.append(              "                _options.add_argument('--headless')\n");
+            code.append(              "                logger.info('Headless mode enabled via HEADLESS_MODE env')\n");
         }
         if (browserType.equals("ie")) {
             // 忽略 Protected Mode 安全区域设置不一致的问题
@@ -423,7 +531,27 @@ public class ScriptGeneratorService {
      * locate_by=index → By.XPATH with positional index
      * 默认(无locate_by) → CSS_SELECTOR 兼容旧数据
      */
+    /**
+     * 清理CSS选择器中的动态状态类名
+     * 这些类在拾取时因鼠标/焦点交互被浏览器自动添加，脚本执行时并不存在
+     */
+    private String cleanSelector(String selector) {
+        if (selector == null) return "";
+        return selector
+                .replaceAll("\\.focusing", "")
+                .replaceAll("\\.is-focus", "")
+                .replaceAll("\\.is-hover", "")
+                .replaceAll("\\.is-active", "")
+                .replaceAll("\\.is-selected", "")
+                .replaceAll("\\.hover", "")
+                .replaceAll("\\.active", "")
+                .replaceAll("\\.focus", "")
+                .replaceAll("\\s{2,}", " ")
+                .trim();
+    }
+
     private String generateFindElement(String varName, String selector, String locateBy, String elementTag) {
+        selector = cleanSelector(selector);
         if (locateBy == null || locateBy.isEmpty() || "css".equals(locateBy)) {
             return String.format("%s = self.driver.find_element(By.CSS_SELECTOR, '%s')", varName, selector);
         } else if ("text".equals(locateBy)) {
@@ -439,6 +567,7 @@ public class ScriptGeneratorService {
      * 统一元素定位表达式（不赋值，用于 WebDriverWait 等场景）
      */
     private String generateLocator(String selector, String locateBy, String elementTag) {
+        selector = cleanSelector(selector);
         if (locateBy == null || locateBy.isEmpty() || "css".equals(locateBy)) {
             return String.format("(By.CSS_SELECTOR, '%s')", selector);
         } else if ("text".equals(locateBy)) {
@@ -526,28 +655,78 @@ public class ScriptGeneratorService {
         );
     }
 
+    private String generateNavigateToUrl(JsonNode params) {
+        String url = params.get("url").asText("");
+        int waitTime = 2;
+        if (params.has("wait_time")) {
+            try { waitTime = Integer.parseInt(params.get("wait_time").asText("2")); } catch (Exception ignored) {}
+        }
+        return String.format(
+                "            logger.info('Navigating to URL: %s')\n" +
+                "            self.driver.get('%s')\n" +
+                "            time.sleep(%d)\n",
+                url, url, waitTime
+        );
+    }
+
     private String generateSelectDropdown(JsonNode params) {
         String selector = params.get("selector").asText("");
         String value = params.get("value").asText("");
-        String selectBy = params.get("select_by").asText("value");
+        String selectBy = params.get("select_by").asText("text");
         String locateBy = getParamText(params, "locate_by", "css");
-        String elementTag = getParamText(params, "element_tag", "select");
+        String elementTag = getParamText(params, "element_tag", "");
 
+        // cleanSelector is already called inside generateFindElement
         String findElement = generateFindElement("element", selector, locateBy, elementTag);
 
-        String selectCode = "value".equals(selectBy)
-            ? String.format("select.select_by_value('%s')", value)
-            : String.format("select.select_by_visible_text('%s')", value);
+        String nativeSelectCode = "value".equals(selectBy)
+                ? String.format("_sel.select_by_value('%s')", value)
+                : String.format("_sel.select_by_visible_text('%s')", value);
 
-        return String.format(
-                "            logger.info('Selecting dropdown option')\n" +
-                "            from selenium.webdriver.support.ui import Select\n" +
-                "            %s\n" +
-                "            select = Select(element)\n" +
-                "            %s\n" +
-                "            time.sleep(1)\n",
-                findElement, selectCode
-        );
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("            logger.info('Selecting dropdown option: %s')\n", value));
+        sb.append(String.format("            %s\n", findElement));
+
+        sb.append("            if element.tag_name.lower() == 'select':\n");
+        sb.append("                from selenium.webdriver.support.ui import Select\n");
+        sb.append("                _sel = Select(element)\n");
+        sb.append(String.format("                %s\n", nativeSelectCode));
+        sb.append("            else:\n");
+        sb.append("                # Element Plus / custom dropdown: click to open, then select option\n");
+        sb.append("                try:\n");
+        sb.append("                    element.click()\n");
+        sb.append("                except Exception:\n");
+        sb.append("                    # Input may not be interactable, try clicking parent or use JS\n");
+        sb.append("                    self.driver.execute_script('arguments[0].click()', element)\n");
+        sb.append("                time.sleep(0.5)\n");
+        sb.append("                # Find matching option in the dropdown popup\n");
+        sb.append("                _options = self.driver.find_elements(By.CSS_SELECTOR, '.el-select-dropdown__item, .el-dropdown-menu__item, [role=\"option\"], li.el-select-dropdown__item')\n");
+        sb.append("                _matched = False\n");
+        sb.append("                for _opt in _options:\n");
+        sb.append(String.format("                    if _opt.text.strip() == '%s' or '%s' in _opt.text.strip():\n", value, value));
+        sb.append("                        try:\n");
+        sb.append("                            _opt.click()\n");
+        sb.append("                        except Exception:\n");
+        sb.append("                            self.driver.execute_script('arguments[0].click()', _opt)\n");
+        sb.append("                        _matched = True\n");
+        sb.append("                        logger.info(f'Selected option: {_opt.text.strip()}')\n");
+        sb.append("                        break\n");
+        sb.append("                if not _matched:\n");
+        sb.append("                    # Try XPath text match as fallback\n");
+        sb.append(String.format("                    _xpath_opts = self.driver.find_elements(By.XPATH, \"//li[contains(@class,'el-select-dropdown__item')]//span[contains(text(),'%s')]\")\n", value));
+        sb.append("                    if not _xpath_opts:\n");
+        sb.append(String.format("                        _xpath_opts = self.driver.find_elements(By.XPATH, \"//li[contains(@class,'el-select-dropdown__item') and contains(.,'%s')]\")\n", value));
+        sb.append("                    if _xpath_opts:\n");
+        sb.append("                        try:\n");
+        sb.append("                            _xpath_opts[0].click()\n");
+        sb.append("                        except Exception:\n");
+        sb.append("                            self.driver.execute_script('arguments[0].click()', _xpath_opts[0])\n");
+        sb.append("                        logger.info('Selected option via XPath fallback')\n");
+        sb.append("                    else:\n");
+        sb.append(String.format("                        logger.warning('Could not find dropdown option: %s')\n", value));
+        sb.append("            time.sleep(1)\n");
+
+        return sb.toString();
     }
 
     private String generateHoverElement(JsonNode params) {
@@ -1251,8 +1430,8 @@ public class ScriptGeneratorService {
         code.append(String.format("            _smtp_pass = '%s'\n", smtpPass.replace("'", "\\'")));
         code.append("            logger.info(f'SMTP config: host={_smtp_host}, port={_smtp_port}, user={_smtp_user}')\n");
         // 支持在 body 和 subject 中用 {变量名} 引用前面提取的变量
-        code.append(String.format("            _email_body = f'%s'\n", body.replace("'", "\\'")));
-        code.append(String.format("            _email_subject = f'%s'\n", subject.replace("'", "\\'")));
+        code.append(String.format("            _email_body = f'''%s'''\n", body.replace("'''", "\\'\\'\\'")));
+        code.append(String.format("            _email_subject = f'''%s'''\n", subject.replace("'''", "\\'\\'\\'")));
         code.append(String.format("            _email_to = '%s'\n", to.replace("'", "\\'")));
         code.append("            logger.info(f'Email: to={_email_to}, subject={_email_subject}')\n");
         code.append("            _msg = MIMEText(_email_body, 'plain', 'utf-8')\n");
@@ -1378,21 +1557,248 @@ public class ScriptGeneratorService {
     }
 
     /**
+     * 注入自定义日志目录。将 _LOG_DIR_OVERRIDE 从空字符串替换为指定路径。
+     */
+    public String injectLogDir(String script, String logDir) {
+        if (logDir == null || logDir.isBlank()) {
+            return script;
+        }
+        // 转义反斜杠用于 Python 字符串
+        String escaped = logDir.replace("\\", "\\\\");
+        return script.replace(
+                "_LOG_DIR_OVERRIDE = ''  # 留空表示使用脚本所在目录",
+                "_LOG_DIR_OVERRIDE = r'" + escaped + "'  # 用户指定日志目录"
+        );
+    }
+
+    /**
      * 在已生成的脚本中注入无头浏览器参数。
      * 将 Chrome/Edge 的 --disable-gpu 前插入 --headless=new，
      * 为 Firefox 插入 --headless，IE 不支持无头模式。
      */
-    private String injectHeadlessMode(String script) {
-        // Chrome / Edge：在 --disable-gpu 前插入 --headless=new
+    public String injectHeadlessMode(String script) {
+        // 防止重复注入
+        if (script.contains("--headless=new") || script.contains("add_argument('--headless')")) {
+            return script;
+        }
+        // Chrome / Edge：在 --disable-gpu 前插入 headless 及 Session 0 兼容参数
         script = script.replace(
                 "_options.add_argument('--disable-gpu')",
-                "_options.add_argument('--headless=new')\n            _options.add_argument('--disable-gpu')"
+                "_options.add_argument('--headless=new')\n"
+                + "            _options.add_argument('--disable-gpu')\n"
+                + "            _options.add_argument('--window-size=1920,1080')\n"
+                + "            _options.add_argument('--disable-features=RendererCodeIntegrity')\n"
+                + "            _options.add_argument('--remote-debugging-port=0')\n"
+                + "            _options.add_argument('--no-sandbox')\n"
+                + "            _options.add_argument('--disable-dev-shm-usage')"
         );
         // Firefox：在 FirefoxOptions() 后插入 --headless
         script = script.replace(
                 "_options = FirefoxOptions()\n",
                 "_options = FirefoxOptions()\n            _options.add_argument('--headless')\n"
         );
+        return script;
+    }
+
+    /**
+     * 为任意脚本注入 RDP 远程桌面支持代码。
+     * 智能检测已存在的代码段，只补充缺失的部分。
+     * 当 scheduled_task 模式已注入基础 RDP 保活时，只补充「部署为系统任务」脚本。
+     *
+     * 完整注入内容：
+     *   1. SetThreadExecutionState 防止系统休眠
+     *   2. 禁用锁屏（注册表）
+     *   3. 生成「安全断开远程桌面.bat」
+     *   4. 生成「部署为系统任务.bat」+ 「停止系统任务.bat」
+     */
+    public String injectRdpSupport(String script) {
+        String marker = "if __name__ == '__main__':";
+        int idx = script.lastIndexOf(marker);
+        if (idx < 0) {
+            return script;
+        }
+
+        // 在 if __name__ 行之后插入 RDP 支持代码
+        int insertPos = idx + marker.length();
+        if (insertPos < script.length() && script.charAt(insertPos) == '\n') {
+            insertPos++;
+        }
+
+        boolean hasBasicRdp = script.contains("远程桌面保活") || script.contains("SetThreadExecutionState");
+        boolean hasDeployBat = script.contains("部署为系统任务");
+        boolean hasMutex = script.contains("CreateMutexW");
+
+        StringBuilder rdp = new StringBuilder();
+
+        // ---- 单实例锁（跨会话全局 Mutex），防止多用户/多次启动产生多个进程 ----
+        if (!hasMutex) {
+            rdp.append("\n    # ====== 单实例锁 ======\n");
+            rdp.append("    _mutex_handle = None\n");
+            rdp.append("    try:\n");
+            rdp.append("        import ctypes\n");
+            rdp.append("        _exe_name = os.path.splitext(os.path.basename(sys.argv[0]))[0]\n");
+            rdp.append("        _mutex_name = f'Global\\\\AutoOp_{_exe_name}'\n");
+            rdp.append("        _mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, True, _mutex_name)\n");
+            rdp.append("        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS\n");
+            rdp.append("            logger.warning(f'程序已在运行中（{_exe_name}），本次启动退出')\n");
+            rdp.append("            ctypes.windll.kernel32.CloseHandle(_mutex_handle)\n");
+            rdp.append("            sys.exit(0)\n");
+            rdp.append("        logger.info(f'单实例锁已获取: {_mutex_name}')\n");
+            rdp.append("    except Exception as _e:\n");
+            rdp.append("        logger.warning(f'创建单实例锁失败（将继续运行）: {_e}')\n");
+        }
+
+        // ---- 基础 RDP 支持（防休眠、禁锁屏、安全断开），如果 scheduled_task 已注入则跳过 ----
+        if (!hasBasicRdp) {
+            rdp.append("\n    # ====== 远程桌面支持 ======\n");
+            rdp.append("    try:\n");
+            rdp.append("        import ctypes as _ctypes\n");
+            rdp.append("        _ctypes.windll.kernel32.SetThreadExecutionState(0x80000002 | 0x00000002 | 0x00000001)\n");
+            rdp.append("        logger.info('已设置系统保活：阻止休眠和屏幕关闭')\n");
+            rdp.append("    except Exception as _e:\n");
+            rdp.append("        logger.warning(f'设置系统保活失败: {_e}')\n");
+
+            rdp.append("    try:\n");
+            rdp.append("        import winreg\n");
+            rdp.append("        _pol_key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER,\n");
+            rdp.append("            r'Software\\Policies\\Microsoft\\Windows\\Personalization', 0, winreg.KEY_SET_VALUE)\n");
+            rdp.append("        winreg.SetValueEx(_pol_key, 'NoLockScreen', 0, winreg.REG_DWORD, 1)\n");
+            rdp.append("        winreg.CloseKey(_pol_key)\n");
+            rdp.append("        logger.info('已禁用锁屏')\n");
+            rdp.append("    except Exception as _e:\n");
+            rdp.append("        logger.warning(f'禁用锁屏失败（可能需要管理员权限）: {_e}')\n");
+
+            rdp.append("    try:\n");
+            rdp.append("        _desktop = os.path.join(os.path.expanduser('~'), 'Desktop')\n");
+            rdp.append("        _bat_path = os.path.join(_desktop, '安全断开远程桌面.bat')\n");
+            rdp.append("        if not os.path.exists(_bat_path):\n");
+            rdp.append("            with open(_bat_path, 'w', encoding='gbk') as _f:\n");
+            rdp.append("                _f.write('@echo off\\n')\n");
+            rdp.append("                _f.write('echo 正在安全断开远程桌面（保持后台程序运行）...\\n')\n");
+            rdp.append("                _f.write('for /f \"skip=1 tokens=3\" %%s in (\\'query user\\') do (\\n')\n");
+            rdp.append("                _f.write('    tscon %%s /dest:console\\n')\n");
+            rdp.append("                _f.write('    goto :done\\n')\n");
+            rdp.append("                _f.write(')\\n')\n");
+            rdp.append("                _f.write(':done\\n')\n");
+            rdp.append("                _f.write('echo 已断开，后台程序将继续运行。\\n')\n");
+            rdp.append("            logger.info(f'已生成安全断开脚本: {_bat_path}')\n");
+            rdp.append("    except Exception as _e:\n");
+            rdp.append("        logger.warning(f'生成断开脚本失败: {_e}')\n");
+        }
+
+        // ---- 部署/停止脚本（始终检查并补充） ----
+        if (!hasDeployBat) {
+            if (hasBasicRdp) {
+                // scheduled_task 模式已有 _desktop 变量，但没有 _exe_path 等
+                rdp.append("\n    # ====== 部署为系统任务 ======\n");
+            } else {
+                rdp.append("\n");
+            }
+            rdp.append("    try:\n");
+            // 确保 _desktop 变量存在（如果基础 RDP 已注入，_desktop 已定义，但可能作用域不同，这里重新赋值）
+            rdp.append("        _desktop = os.path.join(os.path.expanduser('~'), 'Desktop')\n");
+            rdp.append("        _exe_path = os.path.abspath(sys.argv[0])\n");
+            rdp.append("        _exe_name = os.path.splitext(os.path.basename(_exe_path))[0]\n");
+            rdp.append("        _deploy_bat = os.path.join(_desktop, '部署为系统任务_' + _exe_name + '.bat')\n");
+            rdp.append("        _stop_bat = os.path.join(_desktop, '停止系统任务_' + _exe_name + '.bat')\n");
+
+            // 部署脚本
+            rdp.append("        if not os.path.exists(_deploy_bat):\n");
+            rdp.append("            _deploy_lines = [\n");
+            rdp.append("            '@echo off',\n");
+            rdp.append("            'chcp 936 >nul',\n");
+            rdp.append("            'echo ================================================',\n");
+            rdp.append("            'echo   部署自动化程序为 Windows 系统计划任务',\n");
+            rdp.append("            'echo   部署后程序运行在 Session 0（系统级）',\n");
+            rdp.append("            'echo   完全不依赖远程桌面会话',\n");
+            rdp.append("            'echo ================================================',\n");
+            rdp.append("            'echo.',\n");
+            rdp.append("            'net session >nul 2>&1',\n");
+            rdp.append("            'if %errorlevel% neq 0 (',\n");
+            rdp.append("            '    echo [错误] 请右键此脚本 -^> 以管理员身份运行',\n");
+            rdp.append("            '    echo.',\n");
+            rdp.append("            '    pause',\n");
+            rdp.append("            '    exit /b 1',\n");
+            rdp.append("            ')',\n");
+            rdp.append("            'echo.',\n");
+            rdp.append("            'echo [1] 立即运行（注册为任务并马上启动）',\n");
+            rdp.append("            'echo [2] 开机自动启动（每次开机自动运行）',\n");
+            rdp.append("            'echo [3] 立即运行 + 开机自启（推荐）',\n");
+            rdp.append("            'echo [4] 取消',\n");
+            rdp.append("            'echo.',\n");
+            rdp.append("            'set /p CHOICE=\"请选择部署方式 (1/2/3/4): \"',\n");
+            rdp.append("            'if \"%CHOICE%\"==\"4\" goto :end',\n");
+            rdp.append("            'set TASK_NAME=AutoOp_' + _exe_name,\n");
+            rdp.append("            'schtasks /delete /tn \"%TASK_NAME%\" /f >nul 2>&1',\n");
+            rdp.append("            'if \"%CHOICE%\"==\"1\" (',\n");
+            rdp.append("            '    schtasks /create /tn \"%TASK_NAME%\" /tr \"\\\"' + _exe_path + '\\\"\" /sc ONCE /st 00:00 /rl HIGHEST /ru SYSTEM /f',\n");
+            rdp.append("            '    goto :run',\n");
+            rdp.append("            ')',\n");
+            rdp.append("            'if \"%CHOICE%\"==\"2\" (',\n");
+            rdp.append("            '    schtasks /create /tn \"%TASK_NAME%\" /tr \"\\\"' + _exe_path + '\\\"\" /sc ONSTART /rl HIGHEST /ru SYSTEM /f',\n");
+            rdp.append("            '    goto :done',\n");
+            rdp.append("            ')',\n");
+            rdp.append("            'if \"%CHOICE%\"==\"3\" (',\n");
+            rdp.append("            '    schtasks /create /tn \"%TASK_NAME%\" /tr \"\\\"' + _exe_path + '\\\"\" /sc ONSTART /rl HIGHEST /ru SYSTEM /f',\n");
+            rdp.append("            '    goto :run',\n");
+            rdp.append("            ')',\n");
+            rdp.append("            'goto :end',\n");
+            rdp.append("            ':run',\n");
+            rdp.append("            'if %errorlevel% equ 0 (',\n");
+            rdp.append("            '    echo.',\n");
+            rdp.append("            '    echo [成功] 任务已创建，正在启动...',\n");
+            rdp.append("            '    schtasks /run /tn \"%TASK_NAME%\"',\n");
+            rdp.append("            '    echo.',\n");
+            rdp.append("            '    echo 程序已在系统级后台运行，可安全关闭远程桌面。',\n");
+            rdp.append("            '    echo 查看任务: taskschd.msc -^> 任务计划程序库 -^> %TASK_NAME%',\n");
+            rdp.append("            ') else (',\n");
+            rdp.append("            '    echo.',\n");
+            rdp.append("            '    echo [失败] 任务创建失败，请检查权限。',\n");
+            rdp.append("            ')',\n");
+            rdp.append("            'goto :end',\n");
+            rdp.append("            ':done',\n");
+            rdp.append("            'if %errorlevel% equ 0 (',\n");
+            rdp.append("            '    echo.',\n");
+            rdp.append("            '    echo [成功] 任务已创建，将在下次开机时自动启动。',\n");
+            rdp.append("            '    echo 手动启动: schtasks /run /tn \"%TASK_NAME%\"',\n");
+            rdp.append("            '    echo 查看任务: taskschd.msc -^> 任务计划程序库 -^> %TASK_NAME%',\n");
+            rdp.append("            ') else (',\n");
+            rdp.append("            '    echo.',\n");
+            rdp.append("            '    echo [失败] 任务创建失败，请检查权限。',\n");
+            rdp.append("            ')',\n");
+            rdp.append("            ':end',\n");
+            rdp.append("            'echo.',\n");
+            rdp.append("            'pause',\n");
+            rdp.append("            ]\n");
+            rdp.append("            with open(_deploy_bat, 'w', encoding='gbk') as _f:\n");
+            rdp.append("                _f.write('\\r\\n'.join(_deploy_lines))\n");
+            rdp.append("            logger.info(f'已生成系统任务部署脚本: {_deploy_bat}')\n");
+
+            // 停止脚本
+            rdp.append("        if not os.path.exists(_stop_bat):\n");
+            rdp.append("            _stop_lines = [\n");
+            rdp.append("            '@echo off',\n");
+            rdp.append("            'chcp 936 >nul',\n");
+            rdp.append("            'set TASK_NAME=AutoOp_' + _exe_name,\n");
+            rdp.append("            'echo 正在停止并删除系统任务: %TASK_NAME%',\n");
+            rdp.append("            'schtasks /end /tn \"%TASK_NAME%\" >nul 2>&1',\n");
+            rdp.append("            'schtasks /delete /tn \"%TASK_NAME%\" /f >nul 2>&1',\n");
+            rdp.append("            'taskkill /f /im \"' + _exe_name + '.exe\" >nul 2>&1',\n");
+            rdp.append("            'echo.',\n");
+            rdp.append("            'echo [完成] 任务已停止并删除。',\n");
+            rdp.append("            'pause',\n");
+            rdp.append("            ]\n");
+            rdp.append("            with open(_stop_bat, 'w', encoding='gbk') as _f:\n");
+            rdp.append("                _f.write('\\r\\n'.join(_stop_lines))\n");
+            rdp.append("            logger.info(f'已生成任务停止脚本: {_stop_bat}')\n");
+            rdp.append("    except Exception as _e:\n");
+            rdp.append("        logger.warning(f'生成部署脚本失败: {_e}')\n");
+        }
+
+        if (rdp.length() > 0) {
+            rdp.append("    # ====== 远程桌面支持结束 ======\n\n");
+            return script.substring(0, insertPos) + rdp.toString() + script.substring(insertPos);
+        }
         return script;
     }
 
@@ -1524,6 +1930,22 @@ public class ScriptGeneratorService {
         sb.append("    import datetime\n");
         sb.append("    import signal\n");
 
+        // 单实例锁：防止同一个EXE被多次启动
+        sb.append("\n    # ====== 单实例锁 ======\n");
+        sb.append("    _mutex_handle = None\n");
+        sb.append("    try:\n");
+        sb.append("        import ctypes\n");
+        sb.append("        _exe_name = os.path.splitext(os.path.basename(sys.argv[0]))[0]\n");
+        sb.append("        _mutex_name = f'Global\\\\AutoOp_{_exe_name}'\n");
+        sb.append("        _mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, True, _mutex_name)\n");
+        sb.append("        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS\n");
+        sb.append("            logger.warning(f'程序已在运行中（{_exe_name}），本次启动退出')\n");
+        sb.append("            ctypes.windll.kernel32.CloseHandle(_mutex_handle)\n");
+        sb.append("            sys.exit(0)\n");
+        sb.append("        logger.info(f'单实例锁已获取: {_mutex_name}')\n");
+        sb.append("    except Exception as _e:\n");
+        sb.append("        logger.warning(f'创建单实例锁失败（将继续运行）: {_e}')\n");
+
         // 隐藏控制台窗口
         if (runHidden) {
             sb.append("    # 隐藏控制台窗口\n");
@@ -1534,20 +1956,48 @@ public class ScriptGeneratorService {
             sb.append("        pass\n");
         }
 
-        // 开机自启动注册
+        // 注册 Windows 任务计划程序（替代注册表自启动，不依赖用户登录）
         if (autoStart) {
-            sb.append("    # 注册开机自启动\n");
+            sb.append("    # 注册 Windows 任务计划程序\n");
             sb.append("    try:\n");
-            sb.append("        import winreg\n");
+            sb.append("        import subprocess as _sp\n");
             sb.append("        _exe_path = os.path.abspath(sys.argv[0])\n");
-            sb.append("        _app_name = os.path.splitext(os.path.basename(_exe_path))[0]\n");
-            sb.append("        _reg_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,\n");
-            sb.append("            r'Software\\Microsoft\\Windows\\CurrentVersion\\Run', 0, winreg.KEY_SET_VALUE)\n");
-            sb.append("        winreg.SetValueEx(_reg_key, _app_name, 0, winreg.REG_SZ, _exe_path)\n");
-            sb.append("        winreg.CloseKey(_reg_key)\n");
-            sb.append("        logger.info(f'已注册开机自启动: {_app_name}')\n");
+            sb.append("        _task_name = 'AutoOp_' + os.path.splitext(os.path.basename(_exe_path))[0]\n");
+            sb.append("        # 先删除旧任务（忽略不存在的错误）\n");
+            sb.append("        _sp.run(['schtasks', '/delete', '/tn', _task_name, '/f'],\n");
+            sb.append("               capture_output=True, timeout=10)\n");
+            sb.append("        # 创建新任务：开机时运行，当前用户身份，最高权限\n");
+            sb.append("        import getpass as _getpass\n");
+            sb.append("        _current_user = _getpass.getuser()\n");
+            sb.append("        _result = _sp.run([\n");
+            sb.append("            'schtasks', '/create',\n");
+            sb.append("            '/tn', _task_name,\n");
+            sb.append("            '/tr', f'\"{ _exe_path}\"',\n");
+            sb.append("            '/sc', 'ONSTART',\n");
+            sb.append("            '/ru', _current_user,\n");
+            sb.append("            '/rl', 'HIGHEST',\n");
+            sb.append("            '/it',\n");
+            sb.append("            '/f'\n");
+            sb.append("        ], capture_output=True, text=True, timeout=10)\n");
+            sb.append("        if _result.returncode == 0:\n");
+            sb.append("            logger.info(f'已注册 Windows 计划任务: {_task_name}（开机自启，用户 {_current_user}，不依赖登录）')\n");
+            sb.append("        else:\n");
+            sb.append("            logger.warning(f'注册计划任务失败: {_result.stderr}')\n");
+            sb.append("            # 回退：不指定用户，尝试 SYSTEM 方式\n");
+            sb.append("            _result2 = _sp.run([\n");
+            sb.append("                'schtasks', '/create',\n");
+            sb.append("                '/tn', _task_name,\n");
+            sb.append("                '/tr', f'\"{ _exe_path}\"',\n");
+            sb.append("                '/sc', 'ONSTART',\n");
+            sb.append("                '/rl', 'HIGHEST',\n");
+            sb.append("                '/f'\n");
+            sb.append("            ], capture_output=True, text=True, timeout=10)\n");
+            sb.append("            if _result2.returncode == 0:\n");
+            sb.append("                logger.info(f'已注册 Windows 计划任务（SYSTEM模式）: {_task_name}')\n");
+            sb.append("            else:\n");
+            sb.append("                logger.warning(f'注册计划任务（回退）也失败: {_result2.stderr}')\n");
             sb.append("    except Exception as e:\n");
-            sb.append("        logger.warning(f'注册开机自启动失败: {e}')\n");
+            sb.append("        logger.warning(f'注册 Windows 计划任务失败: {e}')\n");
         }
 
         // 远程桌面模式：保持 RDP 断开后会话存活
@@ -1634,10 +2084,22 @@ public class ScriptGeneratorService {
         sb.append("        sys.exit(1)\n");
         sb.append("    def _signal_handler(sig, frame):\n");
         sb.append("        global _running\n");
-        sb.append("        logger.info('收到终止信号，正在退出...')\n");
+        sb.append("        _sig_names = {signal.SIGINT: 'SIGINT(Ctrl+C)', signal.SIGTERM: 'SIGTERM'}\n");
+        sb.append("        if hasattr(signal, 'SIGBREAK'): _sig_names[signal.SIGBREAK] = 'SIGBREAK(控制台关闭/用户注销)'\n");
+        sb.append("        logger.info(f'收到终止信号: {_sig_names.get(sig, sig)}，正在退出...')\n");
         sb.append("        _running = False\n");
         sb.append("    signal.signal(signal.SIGINT, _signal_handler)\n");
         sb.append("    signal.signal(signal.SIGTERM, _signal_handler)\n");
+        sb.append("    # Windows: 捕获控制台关闭/用户注销信号\n");
+        sb.append("    if hasattr(signal, 'SIGBREAK'):\n");
+        sb.append("        signal.signal(signal.SIGBREAK, _signal_handler)\n");
+        sb.append("    # 注册 atexit：无论何种方式退出，都记录一条日志\n");
+        sb.append("    import atexit\n");
+        sb.append("    def _on_exit():\n");
+        sb.append("        logger.info('===== 进程即将退出 =====')\n");
+        sb.append("        for _h in logging.getLogger().handlers:\n");
+        sb.append("            _h.flush()\n");
+        sb.append("    atexit.register(_on_exit)\n");
 
         // _is_run_day(): 判断指定日期是否应该执行
         sb.append("    def _is_run_day(dt):\n");
@@ -1684,17 +2146,37 @@ public class ScriptGeneratorService {
         sb.append("        logger.info(f'下次执行: {nxt.strftime(\"%Y-%m-%d %H:%M %A\")}')\n");
         sb.append("        while _running and datetime.datetime.now() < nxt:\n");
         sb.append("            time.sleep(30)\n");
+        sb.append("            # 定期保活：防止长时间等待期间系统休眠\n");
+        sb.append("            try:\n");
+        sb.append("                import ctypes as _ct\n");
+        sb.append("                _ct.windll.kernel32.SetThreadExecutionState(0x80000002 | 0x00000002)\n");
+        sb.append("            except Exception:\n");
+        sb.append("                pass\n");
         sb.append("        if not _running: break\n");
         sb.append("        try:\n");
+        sb.append("            logger.info('开始执行自动化脚本...')\n");
         sb.append("            script = AutomationScript()\n");
         sb.append("            script.run()\n");
         sb.append("            _retry_count = 0\n");
+        sb.append("            logger.info('自动化脚本执行完成')\n");
         sb.append("        except Exception as e:\n");
         sb.append("            _retry_count += 1\n");
+        sb.append("            import traceback\n");
         sb.append("            logger.error(f'定时执行失败 (第{_retry_count}次): {e}')\n");
+        sb.append("            logger.error(f'详细堆栈:\\n{traceback.format_exc()}')\n");
+        sb.append("            # 重试前清理残留浏览器进程\n");
+        sb.append("            try:\n");
+        sb.append("                import subprocess as _clean_sp\n");
+        sb.append("                for _proc_name in ['chromedriver.exe', 'msedgedriver.exe', 'geckodriver.exe']:\n");
+        sb.append("                    _clean_sp.run(['taskkill', '/f', '/im', _proc_name],\n");
+        sb.append("                                  capture_output=True, timeout=5)\n");
+        sb.append("                logger.info('已清理残留浏览器驱动进程')\n");
+        sb.append("            except Exception:\n");
+        sb.append("                pass\n");
         sb.append("            if _MAX_RETRIES > 0 and _retry_count >= _MAX_RETRIES:\n");
         sb.append("                logger.error('已达最大重试次数，退出')\n");
         sb.append("                break\n");
+        sb.append("            logger.info(f'将在 {_RESTART_DELAY} 秒后重试...')\n");
         sb.append("            time.sleep(_RESTART_DELAY)\n");
         // once 模式：执行完一轮后退出
         sb.append("        if _REPEAT_MODE == 'once':\n");

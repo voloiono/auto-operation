@@ -1,8 +1,8 @@
 {
-  "apiUrl": "https://api.anthropic.com/v1/messages",
+  "baseUrl": "https://www.dmxapi.cn",
   "apiKey": "",
-  "model": "claude-sonnet-4-20250514",
+  "model": "claude-sonnet-4-5-20250929-cc",
   "provider": "anthropic",
-  "maxTokens": 2048,
+  "maxTokens": 4096,
   "systemPrompt": "你是一个自动化脚本助手，帮助用户调试Selenium自动化脚本、解释功能模块用法、分析报错信息。请用中文回答。"
 }

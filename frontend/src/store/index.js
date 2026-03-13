@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { projectApi, flowApi, moduleApi, scheduleApi, executionLogApi } from '../api'
+import { projectApi, flowApi, moduleApi, scheduleApi, executionLogApi, createExecutionStream, marketplaceApi } from '../api'
 
 export const useProjectStore = defineStore('project', () => {
   const projects = ref([])
@@ -98,6 +98,67 @@ export const useFlowStore = defineStore('flow', () => {
   }
 
   /**
+   * SSE 实时日志流
+   * @param {number} logId
+   * @param {function} onLine - 每行输出回调 (line: string)
+   * @param {function} onComplete - 完成回调 (status: string)
+   * @returns {EventSource} 可用于手动关闭
+   */
+  const streamExecutionLog = (logId, onLine, onComplete) => {
+    const es = createExecutionStream(logId)
+    let hasReceivedData = false
+
+    es.addEventListener('output', (e) => {
+      hasReceivedData = true
+      onLine(e.data)
+    })
+
+    es.addEventListener('catchup', (e) => {
+      hasReceivedData = true
+      // 补全历史日志
+      const lines = e.data.split('\n').filter(l => l.trim())
+      lines.forEach(line => onLine(line))
+    })
+
+    es.addEventListener('complete', (e) => {
+      onComplete(e.data)
+      es.close()
+    })
+
+    es.onerror = (err) => {
+      console.error('SSE connection error:', err)
+      es.close()
+
+      // 如果从未收到数据，可能是连接失败
+      if (!hasReceivedData) {
+        onLine('[系统] SSE 连接失败，正在尝试获取执行日志...')
+        // 尝试获取最终状态
+        executionLogApi.get(logId).then(response => {
+          const log = response.data
+          if (log.output) {
+            log.output.split('\n').forEach(line => onLine(line))
+          }
+          onComplete(log.status)
+        }).catch(() => {
+          onComplete('disconnected')
+        })
+      } else {
+        // 已收到部分数据，尝试获取最终状态
+        onComplete('disconnected')
+      }
+    }
+
+    return es
+  }
+
+  /**
+   * 停止正在执行的脚本
+   */
+  const stopExecution = async (logId) => {
+    await executionLogApi.stop(logId)
+  }
+
+  /**
    * 轮询执行日志直到完成
    */
   const pollExecutionLog = (logId, onUpdate, intervalMs = 2000) => {
@@ -135,6 +196,8 @@ export const useFlowStore = defineStore('flow', () => {
     updateFlow,
     generateScript,
     executeFlow,
+    streamExecutionLog,
+    stopExecution,
     pollExecutionLog,
     deleteFlow,
     setCurrentFlow
@@ -159,11 +222,34 @@ export const useModuleStore = defineStore('module', () => {
     return modules.value.filter(m => m.category === category)
   }
 
+  const createModule = async (data) => {
+    const response = await moduleApi.create(data)
+    modules.value.push(response.data)
+    return response.data
+  }
+
+  const updateModule = async (id, data) => {
+    const response = await moduleApi.update(id, data)
+    const index = modules.value.findIndex(m => m.id === id)
+    if (index !== -1) {
+      modules.value[index] = response.data
+    }
+    return response.data
+  }
+
+  const deleteModule = async (id) => {
+    await moduleApi.delete(id)
+    modules.value = modules.value.filter(m => m.id !== id)
+  }
+
   return {
     modules,
     loading,
     fetchModules,
-    getModulesByCategory
+    getModulesByCategory,
+    createModule,
+    updateModule,
+    deleteModule
   }
 })
 
@@ -229,5 +315,44 @@ export const useExecutionLogStore = defineStore('executionLog', () => {
     logs,
     loading,
     fetchLogs
+  }
+})
+
+export const useMarketplaceStore = defineStore('marketplace', () => {
+  const items = ref([])
+  const loading = ref(false)
+
+  const fetchItems = async (params = {}) => {
+    loading.value = true
+    try {
+      const response = await marketplaceApi.list(params)
+      items.value = response.data
+    } finally {
+      loading.value = false
+    }
+  }
+
+  const publishModule = async (moduleId) => {
+    const response = await marketplaceApi.publish(moduleId)
+    return response.data
+  }
+
+  const installModule = async (moduleId) => {
+    const response = await marketplaceApi.install(moduleId)
+    return response.data
+  }
+
+  const unpublishModule = async (moduleId) => {
+    await marketplaceApi.unpublish(moduleId)
+    items.value = items.value.filter(i => i.moduleId !== moduleId)
+  }
+
+  return {
+    items,
+    loading,
+    fetchItems,
+    publishModule,
+    installModule,
+    unpublishModule
   }
 })

@@ -15,4 +15,10 @@ public class ModuleDTO {
     private String description;
     private String inputSchema;
     private String outputSchema;
+    private String pythonTemplate;
+    private Boolean builtIn;
+    private String icon;
+    private String author;
+    private String imports;
+    private String version;
 }

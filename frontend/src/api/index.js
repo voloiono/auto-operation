@@ -27,7 +27,11 @@ export const flowApi = {
 export const moduleApi = {
   list: () => api.get('/modules'),
   get: (moduleId) => api.get(`/modules/${moduleId}`),
-  listByCategory: (category) => api.get(`/modules/category/${category}`)
+  listByCategory: (category) => api.get(`/modules/category/${category}`),
+  create: (data) => api.post('/modules', data),
+  update: (id, data) => api.put(`/modules/${id}`, data),
+  delete: (id) => api.delete(`/modules/${id}`),
+  testTemplate: (moduleId, params) => api.post(`/modules/${moduleId}/test`, { params })
 }
 
 export const scheduleApi = {
@@ -40,13 +44,33 @@ export const scheduleApi = {
 
 export const executionLogApi = {
   list: (flowId) => api.get(`/execution-logs/flow/${flowId}`),
-  get: (id) => api.get(`/execution-logs/${id}`)
+  get: (id) => api.get(`/execution-logs/${id}`),
+  stop: (id) => api.post(`/execution-logs/${id}/stop`)
+}
+
+/**
+ * 创建 SSE 连接获取实时执行日志
+ */
+export const createExecutionStream = (logId) => {
+  return new EventSource(`/api/execution-logs/${logId}/stream`)
 }
 
 export const settingsApi = {
   getAll: () => api.get('/settings'),
   getGroup: (group) => api.get(`/settings/${group}`),
   saveGroup: (group, data) => api.put(`/settings/${group}`, data)
+}
+
+export const aiChatApi = {
+  chat: (data) => api.post('/ai/chat', data, { timeout: 120000 })
+}
+
+export const marketplaceApi = {
+  list: (params) => api.get('/marketplace', { params }),
+  get: (moduleId) => api.get(`/marketplace/${moduleId}`),
+  publish: (moduleId) => api.post(`/marketplace/publish/${moduleId}`),
+  install: (moduleId) => api.post(`/marketplace/install/${moduleId}`),
+  unpublish: (moduleId) => api.delete(`/marketplace/${moduleId}`)
 }
 
 export default api

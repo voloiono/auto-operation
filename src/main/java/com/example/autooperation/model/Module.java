@@ -33,6 +33,21 @@ public class Module {
     @Column(columnDefinition = "TEXT", nullable = false)
     private String outputSchema;
 
-    @Column(columnDefinition = "TEXT", nullable = false)
+    @Column(columnDefinition = "LONGTEXT", nullable = false)
     private String pythonTemplate;
+
+    @Column(nullable = false)
+    private Boolean builtIn = false;
+
+    @Column(length = 10)
+    private String icon;
+
+    @Column(length = 100)
+    private String author;
+
+    @Column(columnDefinition = "TEXT")
+    private String imports;
+
+    @Column(length = 20)
+    private String version = "1.0.0";
 }

@@ -23,10 +23,10 @@ public class ExecutionLog {
     @Column(nullable = false)
     private String status;
 
-    @Column(columnDefinition = "TEXT")
+    @Column(columnDefinition = "LONGTEXT")
     private String output;
 
-    @Column(columnDefinition = "TEXT")
+    @Column(columnDefinition = "LONGTEXT")
     private String errorMessage;
 
     @Column(name = "execution_time_ms")

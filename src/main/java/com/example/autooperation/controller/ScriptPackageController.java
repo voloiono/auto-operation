@@ -28,6 +28,14 @@ public class ScriptPackageController {
             // 根据运行模式包装脚本
             String script = request.getScript();
             String executionMode = request.getExecutionMode();
+            boolean headless = Boolean.TRUE.equals(request.getHeadless());
+            boolean rdpMode = Boolean.TRUE.equals(request.getRdpMode());
+
+            // 远程桌面模式自动启用无头浏览器
+            if (rdpMode) {
+                headless = true;
+            }
+
             if (executionMode != null && !"once".equals(executionMode)) {
                 script = scriptGeneratorService.wrapWithExecutionMode(
                         script,
@@ -40,8 +48,23 @@ public class ScriptPackageController {
                         Boolean.TRUE.equals(request.getRunHidden()),
                         request.getRepeatMode(),
                         request.getRepeatDays(),
-                        Boolean.TRUE.equals(request.getRdpMode())
+                        rdpMode
                 );
+            }
+
+            // 所有模式下 rdpMode 都注入 RDP 支持（防休眠 + 部署脚本），方法内部会跳过已存在的部分
+            if (rdpMode) {
+                script = scriptGeneratorService.injectRdpSupport(script);
+            }
+
+            // 无头模式：无论是否有定时任务，都注入 --headless 参数
+            if (headless) {
+                script = scriptGeneratorService.injectHeadlessMode(script);
+            }
+
+            // 自定义日志目录
+            if (request.getLogDir() != null && !request.getLogDir().isBlank()) {
+                script = scriptGeneratorService.injectLogDir(script, request.getLogDir());
             }
 
             boolean runHidden = Boolean.TRUE.equals(request.getRunHidden());
@@ -83,6 +106,8 @@ public class ScriptPackageController {
         private String repeatMode;
         private List<Integer> repeatDays;
         private Boolean rdpMode;
+        private Boolean headless;
+        private String logDir;
 
         public String getScript() {
             return script;
@@ -202,6 +227,22 @@ public class ScriptPackageController {
 
         public void setRdpMode(Boolean rdpMode) {
             this.rdpMode = rdpMode;
+        }
+
+        public Boolean getHeadless() {
+            return headless;
+        }
+
+        public void setHeadless(Boolean headless) {
+            this.headless = headless;
+        }
+
+        public String getLogDir() {
+            return logDir;
+        }
+
+        public void setLogDir(String logDir) {
+            this.logDir = logDir;
         }
     }
 }

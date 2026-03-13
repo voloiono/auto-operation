@@ -219,6 +219,23 @@
                   {<span>{{ v }}</span>}
                 </el-tag>
               </div>
+              <!-- url_append 日期变量快捷插入 -->
+              <div v-if="key === 'url_append'" class="date-variable-tags">
+                <span class="field-variable-label">插入日期变量：</span>
+                <div class="date-tag-group">
+                  <el-tag
+                    v-for="dv in dateVariables"
+                    :key="dv.value"
+                    size="small"
+                    class="date-tag"
+                    :type="dv.type || 'primary'"
+                    effect="plain"
+                    @click="insertDateVariable(dv.value, key)"
+                  >
+                    {{ dv.label }}
+                  </el-tag>
+                </div>
+              </div>
               <div class="param-hint">{{ getParamHint(key) }}</div>
             </el-form-item>
           </div>
@@ -320,7 +337,7 @@ const selectedNode = computed(() => {
 const sortedParamKeys = computed(() => {
   if (!selectedNode.value) return []
   const keys = Object.keys(selectedNode.value.params)
-  const order = ['monitor_mode', 'close_method', 'frame_action', 'frame_locator', 'target', 'action', 'extract_type', 'locate_by', 'selector', 'element_tag', 'username_selector', 'password_selector', 'smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_ssl', 'proxy_host', 'proxy_port', 'to', 'subject', 'body', 'repeat_mode', 'repeat_days', 'schedule_times', 'restart_delay', 'max_retries', 'auto_start', 'run_hidden', 'rdp_mode']
+  const order = ['monitor_mode', 'close_method', 'frame_action', 'frame_locator', 'target', 'action', 'extract_type', 'locate_by', 'selector', 'element_tag', 'hover_selector', 'tooltip_selector', 'tooltip_timeout', 'btn_locate_by', 'btn_selector', 'intercept_mode', 'url_append', 'username_selector', 'password_selector', 'smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_ssl', 'proxy_host', 'proxy_port', 'to', 'subject', 'body', 'repeat_mode', 'repeat_days', 'schedule_times', 'restart_delay', 'max_retries', 'auto_start', 'run_hidden', 'rdp_mode']
   return keys.sort((a, b) => {
     const ia = order.indexOf(a)
     const ib = order.indexOf(b)
@@ -339,6 +356,7 @@ const currentLocateBy = computed(() => {
 // 是否为 selector 类字段
 const isSelectorField = (key) => {
   return key === 'selector' || key === 'username_selector' || key === 'password_selector'
+    || key === 'hover_selector' || key === 'tooltip_selector' || key === 'btn_selector'
 }
 
 // 条件显示：element_tag 只在 locate_by=index 时显示
@@ -401,6 +419,12 @@ const getParamLabel = (key) => {
     }
     return baseLabel[key]?.[currentLocateBy.value] || baseLabel[key]?.css || key
   }
+  // btn_selector 根据 btn_locate_by 动态切换标签
+  if (key === 'btn_selector') {
+    const btnLocateBy = selectedNode.value?.params?.btn_locate_by || 'css'
+    const labels = { css: '按钮选择器', text: '按钮文字', index: '按钮序号' }
+    return labels[btnLocateBy] || '按钮选择器'
+  }
 
   const labels = {
     'locate_by': '定位方式',
@@ -446,7 +470,14 @@ const getParamLabel = (key) => {
     'max_retries': '最大重试',
     'auto_start': '开机自启',
     'run_hidden': '后台运行',
-    'rdp_mode': '远程桌面模式'
+    'rdp_mode': '远程桌面模式',
+    'hover_selector': '悬停元素选择器',
+    'tooltip_selector': 'Tooltip选择器',
+    'tooltip_timeout': 'Tooltip超时(秒)',
+    'btn_locate_by': '按钮定位方式',
+    'btn_selector': '按钮选择器',
+    'intercept_mode': 'URL拦截方式',
+    'url_append': 'URL追加参数'
   }
   return labels[key] || key
 }
@@ -551,6 +582,19 @@ const getSelectOptions = (key) => {
       { label: '工作日重复（周一至周五）', value: 'weekdays' },
       { label: '自定义星期', value: 'weekly' },
       { label: '不重复（仅执行一次）', value: 'once' }
+    ],
+    'btn_locate_by': [
+      { label: 'CSS选择器', value: 'css' },
+      { label: '按文字查找', value: 'text' },
+      { label: 'XPath表达式', value: 'xpath' },
+      { label: '按序号定位', value: 'index' }
+    ],
+    'intercept_mode': [
+      { label: '拦截href → 拼接后跳转', value: 'intercept_href' },
+      { label: '先点击跳转 → 再拼接URL', value: 'click_then_append' },
+      { label: '新窗口打开 → 切换并拼接URL', value: 'window_open' },
+      { label: 'JS拦截所有导航 → 拼接跳转', value: 'js_intercept' },
+      { label: '直接点击（不拦截不拼接）', value: 'direct_click' }
     ]
   }
 
@@ -598,6 +642,17 @@ const getParamHint = (key) => {
     }
     return hints[currentLocateBy.value] || hints.css
   }
+  // btn_selector 根据 btn_locate_by 动态切换提示
+  if (key === 'btn_selector') {
+    const btnLocateBy = selectedNode.value?.params?.btn_locate_by || 'css'
+    const hints = {
+      css: '按钮的CSS选择器，例如: .el-button',
+      text: "按钮上的文字，如'门诊记录'",
+      xpath: 'XPath表达式，例如: //button[contains(text(),"查询")]',
+      index: '第几个按钮（从1开始），例如: 1'
+    }
+    return hints[btnLocateBy] || hints.css
+  }
 
   const hints = {
     'locate_by': '选择元素的定位方式',
@@ -642,7 +697,14 @@ const getParamHint = (key) => {
     'max_retries': '最大重试次数，0表示无限重试',
     'auto_start': '开机时自动启动程序（仅Windows）',
     'run_hidden': '运行时隐藏控制台窗口，在后台静默执行',
-    'rdp_mode': '开启后浏览器以无头模式运行，断开远程桌面后程序仍可正常执行（支持JumpServer）'
+    'rdp_mode': '开启后浏览器以无头模式运行，断开远程桌面后程序仍可正常执行（支持JumpServer）',
+    'hover_selector': '要悬停的元素的CSS选择器，例如: .menu-item',
+    'tooltip_selector': 'Tooltip弹出层的CSS选择器，例如: .tooltip-popup',
+    'tooltip_timeout': '等待Tooltip出现的超时时间（秒），默认5',
+    'btn_locate_by': '选择按钮的定位方式',
+    'intercept_mode': '选择拦截按钮跳转URL的方式',
+    'url_append': '在拦截到的URL后追加的参数，例如: &tab=detail，支持日期变量: {today} {yesterday} {tomorrow}',
+    'page_load_timeout': '等待页面跳转的超时时间（秒），默认5'
   }
   return hints[key] || ''
 }
@@ -720,6 +782,24 @@ const insertVariable = (varName, paramKey) => {
   if (!selectedNode.value) return
   const current = selectedNode.value.params[paramKey] || ''
   selectedNode.value.params[paramKey] = current + `{${varName}}`
+}
+
+// ==================== 日期变量快捷插入（url_append 专用） ====================
+const dateVariables = [
+  { label: '{today} 今天', value: '{today}', type: 'primary' },
+  { label: '{yesterday} 昨天', value: '{yesterday}', type: '' },
+  { label: '{tomorrow} 明天', value: '{tomorrow}', type: '' },
+  { label: '{today_compact} 20260312', value: '{today_compact}', type: 'info' },
+  { label: '{today_slash} 2026/03/12', value: '{today_slash}', type: 'info' },
+  { label: '{today_cn} 2026年03月12日', value: '{today_cn}', type: 'info' },
+  { label: '{now} 完整时间', value: '{now}', type: 'warning' },
+  { label: '{timestamp} 时间戳', value: '{timestamp}', type: 'warning' },
+]
+
+const insertDateVariable = (varValue, paramKey) => {
+  if (!selectedNode.value) return
+  const current = selectedNode.value.params[paramKey] || ''
+  selectedNode.value.params[paramKey] = current + varValue
 }
 
 // 判断字段是否支持变量插入（纯文本输入字段）
@@ -1143,6 +1223,29 @@ const onRepeatDaysChange = (val) => {
 /* 自定义星期选择器 */
 .repeat-days-picker {
   width: 100%;
+}
+
+/* 日期变量快捷插入 */
+.date-variable-tags {
+  margin-top: 8px;
+}
+
+.date-tag-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.date-tag {
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.2s ease;
+}
+
+.date-tag:hover {
+  transform: scale(1.05);
+  box-shadow: 0 2px 6px rgba(0, 113, 227, 0.25);
 }
 
 .repeat-days-picker :deep(.el-checkbox-group) {

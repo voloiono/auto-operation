@@ -226,8 +226,9 @@ const pickerScript = `
     var nm=el.getAttribute('name');
     if(nm){var s=tag+'[name="'+nm+'"]';try{if(doc.querySelectorAll(s).length===1)return s;}catch(e){}}
     /* class */
+    var _dynCls={focusing:1,focus:1,hover:1,active:1,'is-focus':1,'is-hover':1,'is-active':1,'is-selected':1};
     var cls=[];
-    if(el.classList){for(var i=0;i<el.classList.length;i++){var c=el.classList[i];if(c.indexOf('__sp')!==0)cls.push(c);}}
+    if(el.classList){for(var i=0;i<el.classList.length;i++){var c=el.classList[i];if(c.indexOf('__sp')!==0&&!_dynCls[c])cls.push(c);}}
     if(cls.length){var s2=tag+'.'+cls.map(cssEsc).join('.');try{if(doc.querySelectorAll(s2).length===1)return s2;}catch(e){}}
     /* 递归父级 */
     var parent=el.parentElement;

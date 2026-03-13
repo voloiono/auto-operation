@@ -33,6 +33,11 @@ public class ModuleInitializer implements CommandLineRunner {
                         "{}",
                         "element = self.driver.find_element(By.CSS_SELECTOR, \"{selector}\")\nelement.click()\ntime.sleep({wait_time})"),
 
+                createModule("navigate_to_url", "跳转页面", "basic", "导航到指定URL地址",
+                        "{\"url\": \"text\", \"wait_time\": \"number\"}",
+                        "{}",
+                        "self.driver.get(\"{url}\")\ntime.sleep({wait_time})"),
+
                 createModule("input_text", "输入内容", "basic", "在输入框中输入文本内容",
                         "{\"locate_by\": \"select\", \"selector\": \"text\", \"element_tag\": \"select\", \"text\": \"text\", \"clear_first\": \"boolean\"}",
                         "{}",
@@ -200,6 +205,7 @@ public class ModuleInitializer implements CommandLineRunner {
         module.setInputSchema(inputSchema);
         module.setOutputSchema(outputSchema);
         module.setPythonTemplate(pythonTemplate);
+        module.setBuiltIn(true);
         return module;
     }
 }

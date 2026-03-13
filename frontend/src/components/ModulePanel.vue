@@ -17,7 +17,7 @@
             @click="clickAdd($event, module)"
             :title="module.description"
           >
-            <div class="module-icon">{{ getModuleIcon(module.moduleId) }}</div>
+            <div class="module-icon">{{ getModuleIcon(module) }}</div>
             <div class="module-info">
               <div class="module-name">{{ module.name }}</div>
               <div class="module-desc">{{ module.description }}</div>
@@ -37,7 +37,7 @@
             @click="clickAdd($event, module)"
             :title="module.description"
           >
-            <div class="module-icon">{{ getModuleIcon(module.moduleId) }}</div>
+            <div class="module-icon">{{ getModuleIcon(module) }}</div>
             <div class="module-info">
               <div class="module-name">{{ module.name }}</div>
               <div class="module-desc">{{ module.description }}</div>
@@ -46,17 +46,58 @@
           </div>
         </div>
       </el-tab-pane>
+      <el-tab-pane label="自定义模块">
+        <div class="custom-header">
+          <el-button type="primary" size="small" @click="showModuleManager = true">
+            + 新建模块
+          </el-button>
+        </div>
+        <div class="module-list">
+          <div v-if="customModules.length === 0" class="empty-hint">
+            暂无自定义模块，点击上方按钮创建
+          </div>
+          <div
+            v-for="module in customModules"
+            :key="module.id"
+            class="module-item"
+            draggable="true"
+            @dragstart="dragStart($event, module)"
+            @click="clickAdd($event, module)"
+            :title="module.description"
+          >
+            <div class="module-icon">{{ getModuleIcon(module) }}</div>
+            <div class="module-info">
+              <div class="module-name">{{ module.name }}</div>
+              <div class="module-desc">{{ module.description }}</div>
+            </div>
+            <div class="module-actions">
+              <el-icon class="edit-icon" @click.stop="editModule(module)"><Edit /></el-icon>
+            </div>
+            <div class="module-drag-hint">⋮⋮</div>
+          </div>
+        </div>
+      </el-tab-pane>
     </el-tabs>
+
+    <ModuleManager
+      v-model="showModuleManager"
+      :edit-module="editingModule"
+      @saved="onModuleSaved"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { Edit } from '@element-plus/icons-vue'
 import { useModuleStore } from '../store'
+import ModuleManager from './ModuleManager.vue'
 
 const emit = defineEmits(['add-module'])
 
 const moduleStore = useModuleStore()
+const showModuleManager = ref(false)
+const editingModule = ref(null)
 
 onMounted(() => {
   moduleStore.fetchModules()
@@ -64,30 +105,36 @@ onMounted(() => {
 
 const basicModules = computed(() => moduleStore.getModulesByCategory('basic'))
 const advancedModules = computed(() => moduleStore.getModulesByCategory('advanced'))
+const customModules = computed(() => moduleStore.getModulesByCategory('custom'))
 
-const getModuleIcon = (moduleId) => {
-  const icons = {
-    'open_browser': '🌐',
-    'input_account': '🔐',
-    'click_button': '🖱️',
-    'input_text': '⌨️',
-    'select_dropdown': '📋',
-    'wait_element': '⏳',
-    'get_text': '📄',
-    'screenshot': '📸',
-    'hover_element': '👆',
-    'double_click': '🖱️🖱️',
-    'scroll_to': '📜',
-    'get_attribute': '🏷️',
-    'close_popup': '❌',
-    'batch_input': '📝',
-    'switch_frame': '🔲',
-    'press_enter': '↵',
-    'alert_confirm': '🔔',
-    'extract_content': '🔍',
-    'confirm_dialog': '❓'
-  }
-  return icons[moduleId] || '📦'
+const defaultIcons = {
+  'open_browser': '🌐',
+  'input_account': '🔐',
+  'click_button': '🖱️',
+  'input_text': '⌨️',
+  'select_dropdown': '📋',
+  'wait_element': '⏳',
+  'get_text': '📄',
+  'screenshot': '📸',
+  'hover_element': '👆',
+  'double_click': '🖱️🖱️',
+  'scroll_to': '📜',
+  'get_attribute': '🏷️',
+  'close_popup': '❌',
+  'batch_input': '📝',
+  'switch_frame': '🔲',
+  'press_enter': '↵',
+  'alert_confirm': '🔔',
+  'extract_content': '🔍',
+  'confirm_dialog': '❓',
+  'send_email': '📧',
+  'error_monitor': '🛡️',
+  'scheduled_task': '⏰'
+}
+
+const getModuleIcon = (module) => {
+  if (module.icon) return module.icon
+  return defaultIcons[module.moduleId] || '📦'
 }
 
 const dragStart = (event, module) => {
@@ -96,11 +143,20 @@ const dragStart = (event, module) => {
 }
 
 const clickAdd = (event, module) => {
-  // 点击反馈：添加弹跳 class
   const el = event.currentTarget
   el.classList.add('fly-out')
   setTimeout(() => el.classList.remove('fly-out'), 500)
   emit('add-module', module)
+}
+
+const editModule = (module) => {
+  editingModule.value = module
+  showModuleManager.value = true
+}
+
+const onModuleSaved = () => {
+  editingModule.value = null
+  moduleStore.fetchModules()
 }
 </script>
 
@@ -147,6 +203,19 @@ const clickAdd = (event, module) => {
 :deep(.el-tabs__content) {
   overflow-y: auto;
   max-height: calc(100vh - 300px);
+}
+
+.custom-header {
+  padding: 8px 0 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.empty-hint {
+  text-align: center;
+  color: #909399;
+  font-size: 13px;
+  padding: 24px 0;
 }
 
 .module-list {
@@ -229,6 +298,26 @@ const clickAdd = (event, module) => {
   overflow: hidden;
 }
 
+.module-actions {
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.module-item:hover .module-actions {
+  opacity: 1;
+}
+
+.edit-icon {
+  font-size: 14px;
+  color: #0071e3;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.edit-icon:hover {
+  color: #0077ed;
+}
+
 .module-drag-hint {
   font-size: 12px;
   color: #a1a1a6;
@@ -241,5 +330,3 @@ const clickAdd = (event, module) => {
   opacity: 1;
 }
 </style>
-
-

@@ -109,7 +109,7 @@
                 <div class="node-actions">
                   <div
                     class="node-btn move-btn"
-                    :class="{ disabled: index === 0 }"
+                    :class="{ disabled: isFirstFlowNode(index) }"
                     @click.stop="moveNode(index, -1)"
                     title="上移"
                   >
@@ -117,7 +117,7 @@
                   </div>
                   <div
                     class="node-btn move-btn"
-                    :class="{ disabled: index === nodes.length - 1 }"
+                    :class="{ disabled: isLastFlowNode(index) }"
                     @click.stop="moveNode(index, 1)"
                     title="下移"
                   >
@@ -288,12 +288,139 @@
           </template>
         </el-alert>
 
+        <!-- 高级运行选项 -->
+        <el-divider content-position="left">运行选项</el-divider>
+
+        <el-form-item label="无头模式">
+          <div style="display: flex; align-items: center; gap: 12px; width: 100%">
+            <el-switch v-model="packageHeadless" />
+            <span style="font-size: 12px; color: #909399; line-height: 1.5">
+              浏览器在后台运行，不显示窗口。<strong style="color: #E6A23C">断开远程桌面后仍可正常执行</strong>，适合服务器/无人值守场景
+            </span>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="隐藏控制台">
+          <div style="display: flex; align-items: center; gap: 12px; width: 100%">
+            <el-switch v-model="packageRunHidden" />
+            <span style="font-size: 12px; color: #909399; line-height: 1.5">
+              隐藏命令行黑窗口，程序在后台静默运行。可在任务管理器中查看和结束进程
+            </span>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="远程桌面兼容">
+          <div style="display: flex; align-items: center; gap: 12px; width: 100%">
+            <el-switch v-model="packageRdpMode" @change="onRdpModeChange" />
+            <span style="font-size: 12px; color: #909399; line-height: 1.5">
+              防止系统休眠和锁屏，断开RDP后保持会话活跃。会自动启用无头模式，并在桌面生成「安全断开远程桌面.bat」
+            </span>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="日志目录">
+          <div style="display: flex; align-items: center; gap: 12px; width: 100%">
+            <el-input
+              v-model="packageLogDir"
+              placeholder="留空则保存在脚本所在文件夹"
+              clearable
+              style="max-width: 400px"
+            />
+            <span style="font-size: 12px; color: #909399; line-height: 1.5">
+              运行日志保存位置。留空默认为 exe 所在目录下的「自动化运行日志」文件夹
+            </span>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="开机自启">
+          <div style="display: flex; align-items: center; gap: 12px; width: 100%">
+            <el-switch v-model="packageAutoStart" />
+            <span style="font-size: 12px; color: #909399; line-height: 1.5">
+              通过 Windows 任务计划程序注册开机启动任务，<strong>不依赖用户登录</strong>，系统开机即运行。需要管理员权限
+            </span>
+          </div>
+        </el-form-item>
+
+        <el-alert
+          v-if="packageRdpMode"
+          type="success"
+          :closable="false"
+          style="margin-bottom: 12px"
+        >
+          <template #title>
+            RDP 远程桌面部署说明
+          </template>
+          <template #default>
+            <div style="font-size: 12px; line-height: 2">
+              <p style="margin: 4px 0; color: #E6A23C"><strong>方式一：部署为系统任务（推荐，最稳定）</strong></p>
+              <ol style="margin: 0; padding-left: 18px">
+                <li>将 exe 复制到远程服务器的固定目录</li>
+                <li>双击 exe 运行一次，桌面会生成「部署为系统任务_xxx.bat」</li>
+                <li>右键该 bat → <strong>以管理员身份运行</strong> → 选择部署方式</li>
+                <li>部署完成后，程序运行在系统级 Session 0，<strong>不受 RDP 断开、用户切换、超时注销影响</strong></li>
+              </ol>
+              <p style="margin: 8px 0 4px; color: #909399"><strong>方式二：手动运行</strong></p>
+              <ol style="margin: 0; padding-left: 18px">
+                <li>通过 RDP 登录，双击 exe 启动</li>
+                <li>使用桌面「安全断开远程桌面.bat」断开（不要直接关闭窗口）</li>
+                <li style="color: #F56C6C">注意：其他用户登录或会话超时可能导致程序停止</li>
+              </ol>
+            </div>
+          </template>
+        </el-alert>
+
       </el-form>
       <template #footer>
         <el-button @click="showPackageDialogFlag = false">取消</el-button>
         <el-button type="primary" @click="packageScript" :loading="packaging">打包</el-button>
       </template>
     </el-dialog>
+
+    <!-- 执行控制台面板 -->
+    <Transition name="console-slide">
+      <div v-if="consoleVisible" class="execution-console">
+        <div class="console-header">
+          <div class="console-title">
+            <span class="console-dot" :class="consoleStatus"></span>
+            <span>执行控制台</span>
+            <span v-if="consoleStatus === 'running'" class="console-status-text">执行中...</span>
+            <span v-else-if="consoleStatus === 'success'" class="console-status-text success">执行成功</span>
+            <span v-else-if="consoleStatus === 'failed'" class="console-status-text failed">执行失败</span>
+            <span v-else-if="consoleStatus === 'cancelled'" class="console-status-text cancelled">已取消</span>
+          </div>
+          <div class="console-actions">
+            <el-button
+              v-if="consoleStatus === 'running'"
+              type="danger"
+              size="small"
+              @click="stopCurrentExecution"
+            >
+              停止
+            </el-button>
+            <el-button size="small" @click="clearConsole">清空</el-button>
+            <el-button size="small" @click="consoleVisible = false">收起</el-button>
+          </div>
+        </div>
+        <div class="console-body" ref="consoleBodyRef">
+          <div
+            v-for="(line, idx) in consoleLines"
+            :key="idx"
+            class="console-line"
+            :class="{
+              'line-error': isErrorLine(line),
+              'line-success': isSuccessLine(line),
+              'line-info': isInfoLine(line)
+            }"
+          >
+            <span class="line-number">{{ idx + 1 }}</span>
+            <span class="line-content">{{ line }}</span>
+          </div>
+          <div v-if="consoleStatus === 'running'" class="console-cursor">
+            <span class="cursor-blink">_</span>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -323,7 +450,21 @@ const showPackageDialogFlag = ref(false)
 const packagePlatform = ref('windows')
 const packageNetworkMode = ref('online')
 const packaging = ref(false)
+// 打包高级选项
+const packageHeadless = ref(true)
+const packageRunHidden = ref(true)
+const packageRdpMode = ref(false)
+const packageAutoStart = ref(false)
+const packageLogDir = ref('')
 const canvasRef = ref(null)
+
+// 执行控制台状态
+const consoleVisible = ref(false)
+const consoleLines = ref([])
+const consoleStatus = ref('') // running | success | failed | cancelled | disconnected
+const consoleBodyRef = ref(null)
+let currentLogId = null
+let currentEventSource = null
 
 // 浏览器版本相关
 const browserVersions = ref({})  // { edge: '143', chrome: '120' }
@@ -520,6 +661,10 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (saveTimer) clearTimeout(saveTimer)
+  if (currentEventSource) {
+    currentEventSource.close()
+    currentEventSource = null
+  }
 })
 
 const parseInputSchema = (schema) => {
@@ -623,15 +768,29 @@ const insertModuleFromEvent = (event, targetIndex) => {
  */
 const addModule = (module) => {
   const node = createNodeFromModule(module)
-  nodes.value.push(node)
-  selectNode(node, nodes.value.length - 1)
+
+  // 如果有选中的节点且不是监控节点，在其后面插入
+  if (selectedNodeIndex.value !== null && selectedNodeIndex.value >= 0) {
+    const insertIndex = selectedNodeIndex.value + 1
+    nodes.value.splice(insertIndex, 0, node)
+    selectNode(node, insertIndex)
+  } else {
+    nodes.value.push(node)
+    selectNode(node, nodes.value.length - 1)
+  }
+
   clearJustAdded(node)
   ElMessage.success(`已添加模块: ${module.name}`)
 
-  // 滚动到底部让新节点可见
+  // 滚动到新节点可见
   nextTick(() => {
     if (canvasRef.value) {
-      canvasRef.value.scrollTo({ top: canvasRef.value.scrollHeight, behavior: 'smooth' })
+      const selectedEl = canvasRef.value.querySelector('.node.selected')
+      if (selectedEl) {
+        selectedEl.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      } else {
+        canvasRef.value.scrollTo({ top: canvasRef.value.scrollHeight, behavior: 'smooth' })
+      }
     }
   })
 }
@@ -649,13 +808,39 @@ const reorderNode = (fromIndex, toIndex) => {
 }
 
 const moveNode = (index, direction) => {
-  const newIndex = index + direction
-  if (newIndex < 0 || newIndex >= nodes.value.length) return
+  // 找到下一个非监控节点的位置来交换
+  let targetIndex = index + direction
+  while (targetIndex >= 0 && targetIndex < nodes.value.length && isMonitorNode(nodes.value[targetIndex])) {
+    targetIndex += direction
+  }
+  if (targetIndex < 0 || targetIndex >= nodes.value.length) return
 
   const node = nodes.value[index]
   nodes.value.splice(index, 1)
-  nodes.value.splice(newIndex, 0, node)
-  selectNode(node, newIndex)
+  // splice 后索引可能需要调整
+  const adjustedTarget = targetIndex > index ? targetIndex - 1 : targetIndex
+  nodes.value.splice(adjustedTarget, 0, node)
+  selectNode(node, adjustedTarget)
+}
+
+/**
+ * 判断当前节点是否为流程中（非监控）的第一个节点
+ */
+const isFirstFlowNode = (index) => {
+  for (let i = 0; i < index; i++) {
+    if (!isMonitorNode(nodes.value[i])) return false
+  }
+  return true
+}
+
+/**
+ * 判断当前节点是否为流程中（非监控）的最后一个节点
+ */
+const isLastFlowNode = (index) => {
+  for (let i = index + 1; i < nodes.value.length; i++) {
+    if (!isMonitorNode(nodes.value[i])) return false
+  }
+  return true
 }
 
 const selectNode = (node, index) => {
@@ -735,6 +920,13 @@ const downloadScript = () => {
   element.click()
   document.body.removeChild(element)
   ElMessage.success('脚本已下载')
+}
+
+const onRdpModeChange = (val) => {
+  if (val) {
+    packageHeadless.value = true
+    packageRunHidden.value = true
+  }
 }
 
 const showPackageDialog = async () => {
@@ -835,11 +1027,13 @@ const packageScript = async () => {
             maxRetries: parseInt(p.max_retries) || 0,
             scheduleTimes: times,
             intervalMinutes: 0,
-            autoStart: p.auto_start === 'true' || p.auto_start === true,
-            runHidden: p.run_hidden === 'true' || p.run_hidden === true,
+            autoStart: packageAutoStart.value || p.auto_start === 'true' || p.auto_start === true,
+            runHidden: packageRunHidden.value || p.run_hidden === 'true' || p.run_hidden === true,
             repeatMode: p.repeat_mode || 'daily',
             repeatDays: (p.repeat_days || '').split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)),
-            rdpMode: p.rdp_mode === 'true' || p.rdp_mode === true
+            rdpMode: packageRdpMode.value || p.rdp_mode === 'true' || p.rdp_mode === true,
+            headless: packageHeadless.value,
+            logDir: packageLogDir.value || ''
           }
         }
         return {
@@ -853,8 +1047,10 @@ const packageScript = async () => {
           maxRetries: 0,
           scheduleTimes: [],
           intervalMinutes: 0,
-          autoStart: false,
-          runHidden: false
+          autoStart: packageAutoStart.value,
+          runHidden: packageRunHidden.value,
+          rdpMode: packageRdpMode.value,
+          headless: packageHeadless.value
         }
       })())
     })
@@ -898,23 +1094,91 @@ const executeFlow = async () => {
 
     // 立即返回执行日志（status=running）
     const logDTO = await flowStore.executeFlow(props.flowId)
+    currentLogId = logDTO.id
     ElMessage.info('脚本已开始执行...')
 
-    // 轮询等待执行完成
-    flowStore.pollExecutionLog(logDTO.id, (log) => {
-      if (log.status === 'success') {
+    // 打开控制台并连接 SSE
+    consoleLines.value = []
+    consoleStatus.value = 'running'
+    consoleVisible.value = true
+
+    currentEventSource = flowStore.streamExecutionLog(
+      logDTO.id,
+      (line) => {
+        // 逐行追加
+        consoleLines.value.push(line)
+        // 自动滚动到底部
+        nextTick(() => {
+          if (consoleBodyRef.value) {
+            consoleBodyRef.value.scrollTop = consoleBodyRef.value.scrollHeight
+          }
+        })
+      },
+      (status) => {
+        // 完成
+        consoleStatus.value = status
         executing.value = false
-        ElMessage.success(`执行成功，耗时 ${(log.executionTimeMs / 1000).toFixed(1)} 秒`)
-      } else if (log.status === 'failed') {
-        executing.value = false
-        ElMessage.error('执行失败: ' + (log.errorMessage || '未知错误'))
+        currentEventSource = null
+        if (status === 'success') {
+          ElMessage.success('执行成功')
+        } else if (status === 'failed') {
+          ElMessage.error('执行失败，请查看控制台输出')
+        } else if (status === 'cancelled') {
+          ElMessage.warning('执行已取消')
+        } else if (status === 'disconnected') {
+          consoleStatus.value = 'failed'
+          consoleLines.value.push('[系统] 连接已断开，正在获取完整日志...')
+          // 尝试从后端获取完整日志
+          flowStore.pollExecutionLog(currentLogId, (log) => {
+            if (log.output) {
+              consoleLines.value = log.output.split('\n')
+            }
+            if (log.errorMessage) {
+              consoleLines.value.push('[ERROR] ' + log.errorMessage)
+            }
+            consoleStatus.value = log.status || 'failed'
+          })
+        }
       }
-    })
+    )
   } catch (error) {
     console.error('执行流程失败:', error)
     ElMessage.error('执行流程失败: ' + (error.message || '未知错误'))
     executing.value = false
+    consoleStatus.value = 'failed'
   }
+}
+
+const stopCurrentExecution = async () => {
+  if (!currentLogId) return
+  try {
+    await flowStore.stopExecution(currentLogId)
+    if (currentEventSource) {
+      currentEventSource.close()
+      currentEventSource = null
+    }
+  } catch (error) {
+    ElMessage.error('停止失败: ' + (error.message || '未知错误'))
+  }
+}
+
+const clearConsole = () => {
+  consoleLines.value = []
+}
+
+const isErrorLine = (line) => {
+  const lower = line.toLowerCase()
+  return lower.includes('error') || lower.includes('traceback') || lower.includes('exception')
+}
+
+const isSuccessLine = (line) => {
+  const lower = line.toLowerCase()
+  return lower.includes('success') || lower.includes('completed') || lower.includes('done')
+}
+
+const isInfoLine = (line) => {
+  const lower = line.toLowerCase()
+  return lower.includes('info') || lower.startsWith('[info]')
 }
 
 defineExpose({
@@ -1573,5 +1837,171 @@ defineExpose({
 
 :deep(.custom-dialog .el-dialog__header) {
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+/* ==================== 执行控制台面板 ==================== */
+.execution-console {
+  margin-top: 16px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #1e1e1e;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.console-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  background: #2d2d2d;
+  border-bottom: 1px solid #3e3e3e;
+}
+
+.console-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #e0e0e0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.console-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6e6e73;
+}
+
+.console-dot.running {
+  background: #f59e0b;
+  animation: dotPulse 1.2s ease-in-out infinite;
+}
+
+.console-dot.success {
+  background: #22c55e;
+}
+
+.console-dot.failed {
+  background: #ef4444;
+}
+
+.console-dot.cancelled {
+  background: #f59e0b;
+}
+
+@keyframes dotPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.console-status-text {
+  font-size: 11px;
+  font-weight: 400;
+  color: #f59e0b;
+}
+
+.console-status-text.success {
+  color: #22c55e;
+}
+
+.console-status-text.failed {
+  color: #ef4444;
+}
+
+.console-status-text.cancelled {
+  color: #f59e0b;
+}
+
+.console-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.console-body {
+  padding: 12px 16px;
+  max-height: 320px;
+  min-height: 120px;
+  overflow-y: auto;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.console-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.console-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.console-body::-webkit-scrollbar-thumb {
+  background: #4a4a4a;
+  border-radius: 3px;
+}
+
+.console-line {
+  display: flex;
+  gap: 12px;
+  color: #d4d4d4;
+}
+
+.console-line.line-error {
+  color: #f87171;
+}
+
+.console-line.line-success {
+  color: #4ade80;
+}
+
+.console-line.line-info {
+  color: #60a5fa;
+}
+
+.line-number {
+  color: #6e6e73;
+  min-width: 32px;
+  text-align: right;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.line-content {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.console-cursor {
+  padding-left: 44px;
+  color: #d4d4d4;
+}
+
+.cursor-blink {
+  animation: cursorBlink 1s step-end infinite;
+}
+
+@keyframes cursorBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* 控制台滑入/滑出动画 */
+.console-slide-enter-active {
+  animation: consoleIn 0.3s ease-out;
+}
+
+.console-slide-leave-active {
+  animation: consoleOut 0.2s ease-in;
+}
+
+@keyframes consoleIn {
+  0% { opacity: 0; max-height: 0; transform: translateY(20px); }
+  100% { opacity: 1; max-height: 500px; transform: translateY(0); }
+}
+
+@keyframes consoleOut {
+  0% { opacity: 1; max-height: 500px; transform: translateY(0); }
+  100% { opacity: 0; max-height: 0; transform: translateY(20px); }
 }
 </style>
